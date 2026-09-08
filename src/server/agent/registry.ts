@@ -1,5 +1,31 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { z } from "zod";
 import type { ToolDefinition, ToolGroup } from "./types";
+
+/** The SDK's own schema type, so a drift here fails to compile rather than at runtime. */
+export type ToolInputSchema = Anthropic.Tool.InputSchema;
+
+/**
+ * Converts a tool's Zod schema to the JSON Schema the Messages API accepts.
+ *
+ * Exported so the test suite can assert every registered tool produces a valid
+ * draft 2020-12 schema — an invalid one fails the whole request, not just the
+ * offending tool, so it takes down every run until it is fixed.
+ */
+export function toolInputSchema(schema: z.ZodType<unknown>): ToolInputSchema {
+  const json = zodToJsonSchema(schema, {
+    $refStrategy: "none",
+    // The wrapper object confuses the API; we want the bare schema.
+    definitionPath: "definitions",
+  }) as Record<string, unknown>;
+
+  // zod-to-json-schema stamps a draft-07 $schema; the API wants 2020-12 or nothing.
+  delete json.$schema;
+  delete json.definitions;
+
+  return { ...json, type: "object" } as ToolInputSchema;
+}
 
 const tools = new Map<string, ToolDefinition<never, unknown>>();
 
@@ -43,9 +69,10 @@ export function anthropicToolSpecs() {
         t.autonomy === "level2"
           ? `${t.description}\n\n[REQUIRES USER APPROVAL — calling this creates an approval request; it does not execute immediately.]`
           : t.description,
-      input_schema: zodToJsonSchema(t.schema, {
-        target: "openApi3",
-        $refStrategy: "none",
-      }) as { type: "object"; properties?: Record<string, unknown> },
+      // Draft 2020-12, which is what the Messages API validates against. The
+      // "openApi3" target looks tempting but emits draft-04 spellings such as
+      // `exclusiveMinimum: true`, which the API rejects outright. Refs are
+      // inlined because a tool schema has to stand alone.
+      input_schema: toolInputSchema(t.schema),
     }));
 }

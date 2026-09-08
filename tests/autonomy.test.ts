@@ -173,3 +173,43 @@ describe("research fetch safety", () => {
     await expect(fetchPage("file:///etc/passwd")).rejects.toThrow();
   });
 });
+
+describe("tool schemas", () => {
+  it("emits valid JSON Schema draft 2020-12 for every exposed tool", async () => {
+    const { registerAllTools, anthropicToolSpecs } = await load();
+    registerAllTools();
+    const specs = anthropicToolSpecs();
+    const problems: string[] = [];
+
+    const walk = (node: unknown, path: string, tool: string) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}[${i}]`, tool));
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        // Draft 2020-12 requires these to be numbers. The draft-04 boolean form
+        // is rejected by the Messages API and fails the ENTIRE request, taking
+        // down every run until it is fixed — so it is worth a test.
+        if ((key === "exclusiveMinimum" || key === "exclusiveMaximum") && typeof value !== "number") {
+          problems.push(`${tool}${path}.${key} must be a number, got ${typeof value}`);
+        }
+        if (key === "nullable") problems.push(`${tool}${path}.nullable is OpenAPI-only`);
+        if (key === "$schema" || key === "$ref") problems.push(`${tool}${path}.${key} is not allowed inline`);
+        walk(value, `${path}.${key}`, tool);
+      }
+    };
+
+    for (const spec of specs) {
+      expect(spec.input_schema.type).toBe("object");
+      walk(spec.input_schema, "", spec.name);
+    }
+    expect(problems).toEqual([]);
+    expect(specs.length).toBeGreaterThan(60);
+  });
+
+  it("gives every tool a description that tells the model when to use it", async () => {
+    const { registerAllTools, allTools } = await import("@/server/tools");
+    for (const tool of registerAllTools()) {
+      expect(tool.description.length, `${tool.name} description`).toBeGreaterThan(40);
+    }
+    expect(allTools().length).toBeGreaterThan(60);
+  });
+});
