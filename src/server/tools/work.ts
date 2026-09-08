@@ -15,12 +15,13 @@ export const workTools = [
     autonomy: "level1",
     description:
       "Create a goal in the hierarchy VISION → ANNUAL → QUARTERLY → MONTHLY. Always attach a lower-level goal to its parent via parentId so every task can be traced up to the vision. " +
+      "Building a full hierarchy means calling this once per level, top-down, using the real id each call returns as the next call's parentId — never a placeholder. " +
       "Give a measurable metric and target wherever a number exists — a goal with no number cannot be reviewed.",
     schema: z.object({
       level: z.enum(GOAL_LEVEL),
       title: z.string().min(3),
       description: z.string().optional(),
-      parentId: z.string().optional(),
+      parentId: z.string().optional().describe("The id a previous goal_create call returned. Omit if there is no parent yet — never invent or guess this value."),
       metric: z.string().optional().describe("e.g. monthly_listeners, releases, bookings, eur_revenue"),
       targetValue: z.number().optional(),
       currentValue: z.number().optional(),

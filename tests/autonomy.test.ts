@@ -213,3 +213,42 @@ describe("tool schemas", () => {
     expect(allTools().length).toBeGreaterThan(60);
   });
 });
+
+describe("tool errors reaching the model", () => {
+  // Reproduces exactly what a live run hit: the model wrote "TBD" as a
+  // parentId instead of waiting for a real one from the previous goal_create
+  // call, and Prisma's raw multi-line diagnostic — file path, line numbers, a
+  // source snippet — went straight into the tool result. The model does not
+  // need a stack trace; it needs to know not to guess ids.
+  it("gives the model a short, actionable message instead of a raw Prisma dump", async () => {
+    const { registerAllTools, executeTool } = await load();
+    registerAllTools();
+
+    const result = await executeTool("goal_create", { level: "monthly", title: "Placeholder parent test", parentId: "TBD" }, ctx());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.length).toBeLessThan(200);
+      expect(result.error).not.toMatch(/work\.ts:\d+/);
+      expect(result.error).not.toMatch(/\n\s*\d+\s*\|/);
+      expect(result.recoverable).toBe(true);
+      expect("hint" in result && result.hint).toMatch(/placeholder/i);
+    }
+  });
+
+  it("still writes the full diagnostic to the audit log for debugging", async () => {
+    const { registerAllTools, executeTool, prisma } = await load();
+    registerAllTools();
+
+    await executeTool("goal_create", { level: "monthly", title: "Audit detail check", parentId: "also-not-real" }, ctx());
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { action: "tool.execute", ok: false },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(entry).toBeTruthy();
+    // The server-side record keeps the real diagnostic; only the model-facing
+    // message was narrowed.
+    expect(entry!.detailJson).toMatch(/Foreign key constraint/i);
+  });
+});

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/server/db/client";
 import { toJson } from "@/server/db/json";
+import { toolErrorMessage } from "@/server/db/prisma-errors";
 import { errorMessage, log } from "@/server/logger";
 import { getTool } from "./registry";
 import type { ToolContext, ToolResult } from "./types";
@@ -248,25 +249,32 @@ export async function executeTool(
     return { ok: true, data };
   } catch (err) {
     const durationMs = Date.now() - started;
-    const message = errorMessage(err);
-    await recordStep(ctx, { type: "error", tool: name, input, output: { message }, summary: message, ok: false, durationMs });
+    // The raw message (a Prisma error can run to a multi-line dump of file
+    // paths and source snippets) goes to the log and the audit trail, where a
+    // human debugging the system benefits from the detail. The model gets the
+    // narrowed version: what happened and what to do about it, from
+    // toolErrorMessage — never the internals.
+    const rawMessage = errorMessage(err);
+    const { message: toolMessage, hint } = toolErrorMessage(err);
+
+    await recordStep(ctx, { type: "error", tool: name, input, output: { message: rawMessage }, summary: toolMessage, ok: false, durationMs });
     await audit({
       action: "tool.execute",
       runId: ctx.runId,
       userId: ctx.userId,
       autonomy: tool.autonomy,
       ok: false,
-      detail: { tool: name, input, error: message },
+      detail: { tool: name, input, error: rawMessage },
     });
-    ctx.emit({ type: "tool_end", tool: name, ok: false, summary: message, durationMs });
-    log.error("agent.tool.failed", { runId: ctx.runId, tool: name, error: message });
+    ctx.emit({ type: "tool_end", tool: name, ok: false, summary: toolMessage, durationMs });
+    log.error("agent.tool.failed", { runId: ctx.runId, tool: name, error: rawMessage });
 
     return {
       ok: false,
-      error: message,
+      error: toolMessage,
       // Most tool failures are the agent's to route around; it should adapt, not abort.
       recoverable: true,
-      hint: "Try a different approach, or report the limitation to the operator instead of guessing.",
+      hint: hint ?? "Try a different approach, or report the limitation to the operator instead of guessing.",
     };
   }
 }
