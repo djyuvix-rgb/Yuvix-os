@@ -84,6 +84,25 @@ action is written to an audit log.
 `/contacts` `/analytics` `/finance` `/projects` `/strategy` `/memory` `/brainstorm`
 `/analyze` `/plan` `/execute` `/review` — and plain language works everywhere.
 
+## Voice
+
+The chat panel supports talking to the agent instead of typing, and having it read
+replies back — built on the browser's native Web Speech API, not a paid provider, so it
+needs no API key and costs nothing.
+
+- **🎤 mic button** in the composer: tap to dictate, tap again to stop. The transcript
+  fills the input box for you to review or edit before sending — nothing is sent until
+  you hit Send.
+- **🔊 auto-speak toggle**: when on, every new reply is read aloud automatically
+  (remembered per-browser via `localStorage`). Off by default.
+- **Per-reply read-aloud**: hover any assistant message for a "🔊 read aloud" button to
+  replay it on demand.
+
+Speech recognition needs a real microphone and works best in Chrome or Edge; Safari has
+partial support and Firefox largely does not. Read-aloud (speech synthesis) is broadly
+supported everywhere. Both are feature-detected — the controls that can't work in your
+browser simply don't appear, with a short note explaining why.
+
 ## Audio analysis
 
 Drop a WAV in `workspace/Music/Masters` and ask for an analysis. The engine measures

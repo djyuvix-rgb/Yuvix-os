@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "./markdown";
+import { useVoice } from "./useVoice";
 
 type TraceEvent =
   | { kind: "plan"; steps: { id: number; step: string; tool?: string }[] }
@@ -47,12 +48,49 @@ export function Chat({ onDataChanged }: { onDataChanged: () => void }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [liveTrace, setLiveTrace] = useState<TraceEvent[]>([]);
   const [showCommands, setShowCommands] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const voiceBaseRef = useRef("");
+  const autoSpeakRef = useRef(autoSpeak);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, liveTrace]);
+
+  // A per-browser preference, not business data — localStorage is the right
+  // place for it, same as any UI setting nobody else needs to see.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("yuvix.autoSpeak");
+      if (saved === "1") setAutoSpeak(true);
+    } catch {
+      /* private browsing or a blocked store — default (off) is fine */
+    }
+  }, []);
+  useEffect(() => {
+    autoSpeakRef.current = autoSpeak;
+    try {
+      localStorage.setItem("yuvix.autoSpeak", autoSpeak ? "1" : "0");
+    } catch {
+      /* nothing to persist to; the toggle still works for this session */
+    }
+  }, [autoSpeak]);
+
+  const voice = useVoice((transcript, isFinal) => {
+    const base = voiceBaseRef.current;
+    setInput(base ? `${base} ${transcript}` : transcript);
+    if (isFinal) voiceBaseRef.current = base ? `${base} ${transcript}` : transcript;
+  });
+
+  const toggleListening = useCallback(() => {
+    if (voice.listening) {
+      voice.stopListening();
+      return;
+    }
+    voiceBaseRef.current = input.trim();
+    voice.startListening();
+  }, [voice, input]);
 
   const send = useCallback(
     async (text: string) => {
@@ -162,20 +200,24 @@ export function Chat({ onDataChanged }: { onDataChanged: () => void }) {
         }
       }
 
+      const finalAnswer = answer || "The run ended without producing an answer. Check the trace above.";
       setMessages((prev) => [
         ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: answer || "The run ended without producing an answer. Check the trace above.",
-          trace: [...trace],
-        },
+        { id: crypto.randomUUID(), role: "assistant", content: finalAnswer, trace: [...trace] },
       ]);
       setLiveTrace([]);
       setStreaming(false);
       abortRef.current = null;
       onDataChanged();
+
+      // Speak the finished reply, never partial streamed text — reading a
+      // half-formed sentence aloud mid-stream would just sound broken.
+      if (autoSpeakRef.current && answer) voice.speak(finalAnswer);
     },
+    // voice.speak itself is useCallback-memoized inside useVoice and does not
+    // change identity across renders, so omitting `voice` here is safe and
+    // avoids recreating this whole callback on every voice-state change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [conversationId, streaming, onDataChanged],
   );
 
@@ -198,9 +240,18 @@ export function Chat({ onDataChanged }: { onDataChanged: () => void }) {
                   </div>
                 </div>
               ) : (
-                <div>
+                <div className="group">
                   {m.trace && m.trace.length > 0 && <Trace events={m.trace} collapsed />}
                   <Markdown text={m.content} />
+                  {voice.speakSupported && (
+                    <button
+                      onClick={() => (voice.speaking ? voice.stopSpeaking() : voice.speak(m.content))}
+                      className="mt-1 text-[11px] text-[var(--color-text-faint)] opacity-0 transition-opacity hover:text-[var(--color-text-dim)] group-hover:opacity-100"
+                      title={voice.speaking ? "Stop reading aloud" : "Read this reply aloud"}
+                    >
+                      {voice.speaking ? "⏹ stop" : "🔊 read aloud"}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -234,14 +285,45 @@ export function Chat({ onDataChanged }: { onDataChanged: () => void }) {
             </div>
           )}
 
+          {(voice.listenSupported || voice.speakSupported) && (
+            <div className="mb-1.5 flex items-center gap-3 text-[11px] text-[var(--color-text-faint)]">
+              {voice.speakSupported && (
+                <button
+                  type="button"
+                  onClick={() => setAutoSpeak((v) => !v)}
+                  className={autoSpeak ? "text-[var(--color-accent)]" : "hover:text-[var(--color-text-dim)]"}
+                  title="Automatically read new replies aloud"
+                >
+                  {autoSpeak ? "🔊 auto-speak on" : "🔇 auto-speak off"}
+                </button>
+              )}
+              {voice.listening && <span className="thinking-dot text-[var(--color-danger)]">● listening…</span>}
+            </div>
+          )}
+
           <form
             onSubmit={(e) => { e.preventDefault(); void send(input); }}
             className="flex items-end gap-2"
           >
+            {voice.listenSupported && (
+              <button
+                type="button"
+                onClick={toggleListening}
+                disabled={streaming}
+                className={`btn shrink-0 px-3 ${voice.listening ? "btn-danger" : ""}`}
+                title={voice.listening ? "Stop dictation" : "Speak instead of typing"}
+              >
+                {voice.listening ? "⏹" : "🎤"}
+              </button>
+            )}
             <textarea
               className="input resize-none py-2.5"
               rows={Math.min(6, Math.max(1, input.split("\n").length))}
-              placeholder="Give me an outcome, not instructions. Try /today, or “grow Yuvix this year”."
+              placeholder={
+                voice.listenSupported
+                  ? "Give me an outcome, not instructions — type, or tap 🎤 to talk."
+                  : "Give me an outcome, not instructions. Try /today, or “grow Yuvix this year”."
+              }
               value={input}
               onChange={(e) => { setInput(e.target.value); setShowCommands(e.target.value.startsWith("/")); }}
               onKeyDown={(e) => {
@@ -263,6 +345,12 @@ export function Chat({ onDataChanged }: { onDataChanged: () => void }) {
               </button>
             )}
           </form>
+          {!voice.listenSupported && (
+            <p className="mt-1.5 text-[10px] text-[var(--color-text-faint)]">
+              Voice input isn't supported in this browser (works in Chrome and Edge; partial support in Safari).
+              {voice.speakSupported ? " Read-aloud still works." : ""}
+            </p>
+          )}
         </div>
       </div>
     </div>
