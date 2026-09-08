@@ -1,0 +1,907 @@
+// YUVIX OS — domain schema
+//
+// Portability note: the provider is driven by env so the same schema runs on
+// SQLite (zero-infra local default) and PostgreSQL (production). To stay
+// portable we deliberately avoid: native enums, scalar lists, and the Json
+// scalar. Enum-like fields are Strings constrained by constants in
+// src/server/domain/constants.ts, and structured blobs are JSON text handled by
+// the codecs in src/server/db/json.ts.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  // Switch to "postgresql" and point DATABASE_URL at Postgres to move up.
+  // No model in this file uses a SQLite-only or Postgres-only feature.
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity & access
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         String   @default("owner") // owner | collaborator | viewer
+  timezone     String   @default("UTC")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions      AuthSession[]
+  conversations Conversation[]
+  auditLogs     AuditLog[]
+  approvals     Approval[]
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 1/2: user profile + artist profile + brand
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ArtistProfile {
+  id           String  @id @default(cuid())
+  artistName   String
+  realName     String?
+  tagline      String?
+  homeCity     String?
+  country      String?
+  genresJson   String  @default("[]") // string[]
+  soundJson    String  @default("[]") // descriptors: "melodic", "driving", ...
+  influencesJson String @default("[]")
+  story        String?
+  positioning  String?
+  targetAudience String?
+  shortBio     String?
+  longBio      String?
+  pressBio     String?
+  toneOfVoice  String?
+  visualIdentity String?
+  visualReferencesJson String @default("[]")
+  brandKeywordsJson    String @default("[]")
+  messagingJson        String @default("[]")
+  // Operating constraints the agent must respect when planning
+  weeklyHours     Int?
+  monthlyBudgetEur Float?
+  resourcesJson   String @default("{}") // { hasVideographer: false, ... }
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  socialAccounts SocialAccount[]
+  contentPillars ContentPillar[]
+}
+
+model SocialAccount {
+  id            String  @id @default(cuid())
+  artistId      String
+  platform      String // instagram | tiktok | youtube | spotify | soundcloud | beatport | bandcamp | facebook | x | other
+  handle        String
+  url           String?
+  followers     Int?
+  monthlyListeners Int?
+  isPrimary     Boolean @default(false)
+  notes         String?
+  lastSyncedAt  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  artist ArtistProfile @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  @@unique([artistId, platform, handle])
+  @@index([platform])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 10: semantic / long-term memory
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MemoryItem {
+  id         String  @id @default(cuid())
+  layer      String // profile | artist | business | crm | project | task | decision | campaign | performance | semantic
+  kind       String // fact | assumption | preference | insight | event | lesson | reference
+  title      String
+  content    String
+  // Facts are things the user told us or a tool measured. Assumptions are the
+  // agent's inferences. The agent must present them differently.
+  confidence Float   @default(0.6)
+  source     String  @default("user") // user | tool:<name> | research | inference | system
+  sourceUrl  String?
+  tagsJson   String  @default("[]")
+  // Optional link back to a domain row so structured memory and semantic
+  // memory stay in sync.
+  entityType String?
+  entityId   String?
+  supersededById String?
+  isArchived Boolean @default(false)
+  lastUsedAt DateTime?
+  useCount   Int     @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  embedding MemoryEmbedding?
+
+  @@index([layer, isArchived])
+  @@index([entityType, entityId])
+  @@index([kind])
+}
+
+model MemoryEmbedding {
+  id         String   @id @default(cuid())
+  memoryId   String   @unique
+  model      String
+  dimensions Int
+  // Float32 vector, base64-encoded. Swappable for pgvector: see
+  // src/server/memory/vector-store.ts
+  vector     String
+  createdAt  DateTime @default(now())
+
+  memory MemoryItem @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Goals → projects → tasks
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Goal {
+  id          String    @id @default(cuid())
+  level       String // vision | annual | quarterly | monthly
+  title       String
+  description String?
+  parentId    String?
+  metric      String? // e.g. "monthly listeners"
+  targetValue Float?
+  currentValue Float?
+  unit        String?
+  startDate   DateTime?
+  dueDate     DateTime?
+  status      String    @default("active") // active | achieved | missed | paused | dropped
+  priority    Int       @default(3) // 1 highest
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  parent   Goal?     @relation("GoalTree", fields: [parentId], references: [id])
+  children Goal[]    @relation("GoalTree")
+  projects Project[]
+
+  @@index([level, status])
+  @@index([parentId])
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  summary     String?
+  goalId      String?
+  type        String    @default("general") // release | content | growth | outreach | business | production | general
+  status      String    @default("active") // planned | active | blocked | done | cancelled
+  priority    Int       @default(3)
+  startDate   DateTime?
+  dueDate     DateTime?
+  completedAt DateTime?
+  contextJson String    @default("{}")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  goal      Goal?      @relation(fields: [goalId], references: [id])
+  tasks     Task[]
+  campaigns Campaign[]
+
+  @@index([status, priority])
+}
+
+model Task {
+  id           String    @id @default(cuid())
+  title        String
+  details      String?
+  projectId    String?
+  status       String    @default("todo") // todo | doing | blocked | done | cancelled
+  priority     Int       @default(3)
+  impact       Int       @default(3) // 1..5 estimated business impact
+  effortMin    Int? // estimated minutes
+  dueDate      DateTime?
+  scheduledFor DateTime?
+  completedAt  DateTime?
+  owner        String    @default("user") // user | agent
+  // Why this task matters — surfaced by /today so every task is explainable.
+  rationale    String?
+  blockedReason String?
+  sourceRunId  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  project    Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  dependsOn  TaskDependency[] @relation("Dependent")
+  blocks     TaskDependency[] @relation("Blocker")
+
+  @@index([status, dueDate])
+  @@index([projectId])
+}
+
+model TaskDependency {
+  id          String @id @default(cuid())
+  taskId      String // the dependent task
+  dependsOnId String // must finish first
+
+  task      Task @relation("Dependent", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOn Task @relation("Blocker", fields: [dependsOnId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, dependsOnId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Music: tracks, releases, audio analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Track {
+  id          String    @id @default(cuid())
+  title       String
+  artistCredit String? // "Yuvix", "Yuvix & X", "X (Yuvix Remix)"
+  version     String    @default("original") // original | remix | edit | vip | bootleg
+  genre       String?
+  subgenre    String?
+  bpm         Float?
+  musicalKey  String?
+  durationSec Int?
+  status      String    @default("idea") // idea | demo | wip | mixdown | mastering | ready | signed | scheduled | released | shelved
+  collaboratorsJson String @default("[]")
+  labelTargetsJson  String @default("[]") // label ids or names being considered
+  releaseStrategy   String?
+  notes       String?
+  isrc        String?
+  artworkPath String?
+  masterPath  String?
+  stemsPath   String?
+  deadline    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  releases  Release[]
+  analyses  AudioAnalysis[]
+  files     FileAsset[]
+
+  @@index([status])
+}
+
+model Release {
+  id           String    @id @default(cuid())
+  trackId      String?
+  title        String
+  type         String    @default("single") // single | ep | album | remix | compilation
+  labelId      String?
+  labelName    String?
+  distributor  String?
+  releaseDate  DateTime?
+  announceDate DateTime?
+  status       String    @default("planned") // planned | scheduled | out | cancelled
+  isrc         String?
+  upc          String?
+  linksJson    String    @default("{}") // { spotify, beatport, soundcloud, youtube, presave }
+  splitsJson   String    @default("[]") // [{ name, role, percent }]
+  budgetEur    Float?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  track     Track?     @relation(fields: [trackId], references: [id], onDelete: SetNull)
+  label     Label?     @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  campaigns Campaign[]
+  supports  DjSupport[]
+  placements PlaylistPlacement[]
+
+  @@index([releaseDate])
+  @@index([status])
+}
+
+model DjSupport {
+  id         String   @id @default(cuid())
+  releaseId  String
+  djName     String
+  contactId  String?
+  context    String? // radio show, festival set, chart, feedback
+  evidenceUrl String?
+  date       DateTime?
+  weight     Int      @default(3) // 1..5 how meaningful
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  release Release  @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([releaseId])
+}
+
+model PlaylistPlacement {
+  id           String    @id @default(cuid())
+  releaseId    String?
+  platform     String    @default("spotify")
+  playlistName String
+  curator      String?
+  followers    Int?
+  url          String?
+  addedAt      DateTime?
+  removedAt    DateTime?
+  streamsFrom  Int?
+  notes        String?
+  createdAt    DateTime  @default(now())
+
+  release Release? @relation(fields: [releaseId], references: [id], onDelete: SetNull)
+
+  @@index([platform])
+}
+
+model AudioAnalysis {
+  id          String   @id @default(cuid())
+  trackId     String?
+  filePath    String
+  fileHash    String?
+  format      String?
+  sampleRate  Int?
+  channels    Int?
+  durationSec Float?
+  bpm         Float?
+  musicalKey  String?
+  // Loudness / dynamics (ITU-R BS.1770-4 integrated LUFS, dBFS peaks)
+  lufsIntegrated Float?
+  lufsShortTermMax Float?
+  truePeakDb  Float?
+  samplePeakDb Float?
+  dynamicRangeDb Float?
+  crestFactorDb Float?
+  // Stereo
+  stereoWidth Float? // 0 = mono, 1 = fully decorrelated
+  phaseCorrelation Float? // -1..1
+  monoCompatibilityDb Float? // level change when summed to mono
+  lowEndWidth Float? // stereo width below 120 Hz
+  // Spectrum + issues
+  spectrumJson String  @default("[]") // [{ band, hz, db }]
+  clippedSamples Int?
+  issuesJson   String  @default("[]") // [{ severity, code, message, suggestion }]
+  summary      String?
+  engine       String  @default("yuvix-dsp-v1")
+  createdAt    DateTime @default(now())
+
+  track Track? @relation(fields: [trackId], references: [id], onDelete: SetNull)
+
+  @@index([trackId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Industry graph: labels, contacts, CRM
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Label {
+  id             String    @id @default(cuid())
+  name           String    @unique
+  country        String?
+  genresJson     String    @default("[]")
+  rosterJson     String    @default("[]")
+  website        String?
+  submissionMethod String? // demo form | email | agency | closed
+  submissionUrl  String?
+  submissionEmail String?
+  submissionPolicy String?
+  recentReleasesJson String @default("[]")
+  audienceNotes  String?
+  // 0..100 computed fit; the agent must show its reasoning in fitRationale
+  fitScore       Float?
+  fitRationale   String?
+  tier           String? // major | established | mid | boutique | new
+  status         String    @default("discovered") // discovered | researched | target | contacted | replied | interested | negotiating | signed | rejected | follow_up | inactive
+  lastContactAt  DateTime?
+  nextActionAt   DateTime?
+  nextAction     String?
+  notes          String?
+  sourcesJson    String    @default("[]") // [{ url, title, fetchedAt }]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  contacts     Contact[]
+  releases     Release[]
+  interactions Interaction[]
+
+  @@index([status])
+  @@index([fitScore])
+}
+
+model Contact {
+  id            String    @id @default(cuid())
+  name          String
+  role          String? // label manager | A&R | DJ | promoter | booker | journalist | curator | producer | manager | other
+  company       String?
+  labelId       String?
+  email         String?
+  instagram     String?
+  soundcloud    String?
+  website       String?
+  country       String?
+  city          String?
+  relationship  String    @default("cold") // cold | warm | active | dormant
+  status        String    @default("discovered")
+  priority      Int       @default(3)
+  lastContactAt DateTime?
+  nextActionAt  DateTime?
+  nextAction    String?
+  notes         String?
+  tagsJson      String    @default("[]")
+  sourcesJson   String    @default("[]")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  label        Label?        @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  interactions Interaction[]
+  outreach     Outreach[]
+  supports     DjSupport[]
+
+  @@index([status])
+  @@index([nextActionAt])
+}
+
+model Interaction {
+  id         String   @id @default(cuid())
+  contactId  String?
+  labelId    String?
+  direction  String // outbound | inbound
+  channel    String // email | instagram | soundcloud | whatsapp | call | in_person | other
+  subject    String?
+  body       String?
+  outcome    String? // no_reply | replied | positive | negative | meeting | deal
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  label   Label?   @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([occurredAt])
+}
+
+model Outreach {
+  id          String    @id @default(cuid())
+  contactId   String?
+  targetName  String
+  channel     String
+  purpose     String // demo_submission | booking | collab | press | playlist | follow_up | other
+  subject     String?
+  body        String
+  status      String    @default("draft") // draft | awaiting_approval | approved | sent | rejected | cancelled
+  approvalId  String?
+  scheduledFor DateTime?
+  sentAt      DateTime?
+  followUpAt  DateTime?
+  releaseId   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Campaigns
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Campaign {
+  id          String    @id @default(cuid())
+  name        String
+  type        String    @default("release") // release | growth | content | brand | tour
+  releaseId   String?
+  projectId   String?
+  startDate   DateTime?
+  endDate     DateTime?
+  status      String    @default("planned") // planned | running | done | cancelled
+  budgetEur   Float?
+  objectiveJson String  @default("{}") // { primary: "...", kpis: [{ metric, target }] }
+  resultJson  String    @default("{}")
+  retroNotes  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  release Release?        @relation(fields: [releaseId], references: [id], onDelete: SetNull)
+  project Project?        @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  stages  CampaignStage[]
+
+  @@index([status])
+}
+
+model CampaignStage {
+  id          String    @id @default(cuid())
+  campaignId  String
+  name        String // "8-6 weeks: foundation"
+  phase       String // foundation | build | amplify | launch | sustain
+  startDate   DateTime?
+  endDate     DateTime?
+  orderIndex  Int       @default(0)
+  goal        String?
+  status      String    @default("planned")
+  createdAt   DateTime  @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, orderIndex])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Content engine
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ContentPillar {
+  id          String  @id @default(cuid())
+  artistId    String
+  name        String
+  description String?
+  sharePct    Int     @default(20)
+  examplesJson String @default("[]")
+  createdAt   DateTime @default(now())
+
+  artist ArtistProfile @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  pieces ContentPiece[]
+
+  @@unique([artistId, name])
+}
+
+model ContentPiece {
+  id           String    @id @default(cuid())
+  pillarId     String?
+  campaignId   String?
+  releaseId    String?
+  platform     String // instagram | tiktok | youtube | youtube_shorts | spotify | soundcloud | facebook
+  format       String // reel | short | carousel | story | post | longform | live
+  title        String
+  hook         String?
+  script       String?
+  caption      String?
+  cta          String?
+  productionNotes String?
+  assetsNeededJson String @default("[]")
+  status       String    @default("idea") // idea | scripted | filming | editing | ready | scheduled | published | archived
+  scheduledFor DateTime?
+  publishedAt  DateTime?
+  url          String?
+  experimentId String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  pillar      ContentPillar?      @relation(fields: [pillarId], references: [id], onDelete: SetNull)
+  performance ContentPerformance?
+
+  @@index([status, scheduledFor])
+  @@index([platform])
+}
+
+model ContentPerformance {
+  id          String   @id @default(cuid())
+  pieceId     String   @unique
+  views       Int?
+  likes       Int?
+  comments    Int?
+  shares      Int?
+  saves       Int?
+  watchTimeSec Int?
+  followersGained Int?
+  clicks      Int?
+  source      String   @default("manual") // manual | integration:<name>
+  measuredAt  DateTime @default(now())
+
+  piece ContentPiece @relation(fields: [pieceId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Analytics + finance
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Metric {
+  id         String   @id @default(cuid())
+  platform   String // spotify | instagram | tiktok | youtube | soundcloud | beatport | overall
+  metric     String // monthly_listeners | followers | streams | saves | views | ...
+  value      Float
+  entityType String? // release | track | content | account
+  entityId   String?
+  periodStart DateTime
+  periodEnd   DateTime
+  source     String   @default("manual") // manual | integration:<name> | import:csv
+  createdAt  DateTime @default(now())
+
+  @@index([platform, metric, periodEnd])
+  @@index([entityType, entityId])
+}
+
+model FinanceEntry {
+  id          String   @id @default(cuid())
+  direction   String // income | expense
+  category    String // streaming | royalties | gig | production | mixing | mastering | remix | sync | licensing | sponsorship | other
+  // expenses: promotion | advertising | software | equipment | artwork | mixmaster | distribution | travel | content | management | other
+  amountEur   Float
+  currency    String   @default("EUR")
+  amountOriginal Float?
+  description String?
+  vendor      String?
+  releaseId   String?
+  campaignId  String?
+  projectId   String?
+  occurredAt  DateTime
+  receiptPath String?
+  source      String   @default("manual")
+  createdAt   DateTime @default(now())
+
+  @@index([direction, occurredAt])
+  @@index([campaignId])
+}
+
+model Experiment {
+  id         String    @id @default(cuid())
+  hypothesis String
+  area       String // content | ads | outreach | release | pricing | other
+  design     String?
+  metric     String
+  baseline   Float?
+  result     Float?
+  costEur    Float?
+  startedAt  DateTime?
+  endedAt    DateTime?
+  status     String    @default("proposed") // proposed | running | concluded | abandoned
+  conclusion String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions, insights, reviews
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Decision {
+  id           String   @id @default(cuid())
+  question     String
+  context      String?
+  optionsJson  String   @default("[]") // [{ label, upside, downside, opportunityCost }]
+  recommendation String
+  reasoning    String
+  uncertainty  String?
+  confidence   Float    @default(0.6)
+  chosenOption String?
+  decidedBy    String   @default("agent") // agent | user
+  decidedAt    DateTime?
+  outcome      String?
+  reviewAt     DateTime?
+  entityType   String?
+  entityId     String?
+  runId        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([entityType, entityId])
+}
+
+model Insight {
+  id          String   @id @default(cuid())
+  kind        String // opportunity | risk | bottleneck | missed | inefficiency | recommendation
+  area        String // content | release | growth | outreach | finance | production | brand
+  title       String
+  body        String
+  evidenceJson String  @default("[]") // [{ type, label, value, ref }]
+  confidence  Float    @default(0.6)
+  severity    Int      @default(3) // 1..5
+  status      String   @default("new") // new | acknowledged | acted | dismissed | expired
+  suggestedActionsJson String @default("[]")
+  detector    String // rule id that produced it
+  dedupeKey   String?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([dedupeKey])
+  @@index([status, severity])
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  type       String // daily | weekly | monthly | quarterly
+  periodStart DateTime
+  periodEnd   DateTime
+  bodyJson   String   @default("{}") // structured review sections
+  markdown   String?
+  createdAt  DateTime @default(now())
+
+  @@index([type, periodEnd])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent runtime: conversations, runs, steps, approvals, audit, jobs
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String   @default("New conversation")
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  runs     AgentRun[]
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String // user | assistant | system
+  content        String
+  runId          String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model AgentRun {
+  id             String    @id @default(cuid())
+  conversationId String?
+  trigger        String    @default("chat") // chat | schedule | job | api
+  objective      String
+  objectiveType  String? // question | research | plan | execute | analysis | creative | admin
+  planJson       String    @default("[]") // [{ id, step, tool?, status, note }]
+  status         String    @default("running") // running | waiting_approval | completed | failed | cancelled
+  result         String?
+  verification   String?
+  error          String?
+  model          String?
+  inputTokens    Int       @default(0)
+  outputTokens   Int       @default(0)
+  costUsd        Float     @default(0)
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  steps        AgentStep[]
+  approvals    Approval[]
+
+  @@index([status, startedAt])
+}
+
+model AgentStep {
+  id          String   @id @default(cuid())
+  runId       String
+  index       Int
+  type        String // think | tool_call | tool_result | plan | verify | error | approval_wait
+  tool        String?
+  inputJson   String   @default("{}")
+  outputJson  String   @default("{}")
+  summary     String?
+  ok          Boolean  @default(true)
+  durationMs  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, index])
+}
+
+model Approval {
+  id          String    @id @default(cuid())
+  runId       String?
+  userId      String?
+  tool        String
+  autonomy    String // level2 | level3
+  title       String
+  description String
+  argsJson    String    @default("{}")
+  previewJson String    @default("{}") // human-readable rendering of what will happen
+  riskNotes   String?
+  status      String    @default("pending") // pending | approved | rejected | expired | executed | failed
+  decidedAt   DateTime?
+  decidedNote String?
+  resultJson  String    @default("{}")
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  run  AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  user User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  actor      String   @default("agent") // agent | user | system | job:<name>
+  action     String // tool.execute | approval.approve | auth.login | data.delete | ...
+  entityType String?
+  entityId   String?
+  autonomy   String?
+  ok         Boolean  @default(true)
+  detailJson String   @default("{}")
+  runId      String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  name         String // research.labels | review.weekly | insights.scan | campaign.generate
+  payloadJson  String    @default("{}")
+  status       String    @default("queued") // queued | running | completed | failed | cancelled
+  priority     Int       @default(3)
+  runAfter     DateTime  @default(now())
+  attempts     Int       @default(0)
+  maxAttempts  Int       @default(3)
+  lastError    String?
+  resultJson   String    @default("{}")
+  lockedAt     DateTime?
+  lockedBy     String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  cron         String? // set for recurring definitions
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status, runAfter])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Files & integrations
+// ─────────────────────────────────────────────────────────────────────────────
+
+model FileAsset {
+  id         String   @id @default(cuid())
+  path       String   @unique // relative to the workspace root
+  name       String
+  category   String // music | artwork | marketing | contract | analytics | finance | research | strategy | other
+  mimeType   String?
+  sizeBytes  Int?
+  hash       String?
+  trackId    String?
+  releaseId  String?
+  description String?
+  tagsJson   String   @default("[]")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  track Track? @relation(fields: [trackId], references: [id], onDelete: SetNull)
+
+  @@index([category])
+}
+
+model Integration {
+  id           String    @id @default(cuid())
+  key          String    @unique // spotify | youtube | gmail | notion | ...
+  name         String
+  status       String    @default("not_configured") // not_configured | configured | error | disabled
+  // Secrets live in the environment. This row only records WHICH env vars are
+  // required and whether they are present — never the values themselves.
+  requiredEnvJson String @default("[]")
+  configJson   String    @default("{}") // non-secret settings only
+  lastCheckedAt DateTime?
+  lastError    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
