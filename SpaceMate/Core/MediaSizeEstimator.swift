@@ -39,3 +39,18 @@ enum MediaSizeEstimator {
     static let methodDescriptionVideo = "Estimated from resolution × duration using typical iPhone HEVC bitrates. Tap “Measure exact size” to count the real bytes stored on this iPhone."
     static let methodDescriptionPhoto = "Estimated from pixel count using typical HEIC/PNG compression."
 }
+
+/// PhotoKit labels screenshots but has no public flag for screen recordings, so SpaceMate
+/// recognises them by shape: iOS records at the screen's native size (1170 × 2532 on iPhone 13),
+/// an aspect ratio of about 2.16 that iPhone camera video (16:9 or 4:3) never uses.
+/// The UI always calls these "likely" screen recordings.
+enum ScreenRecordingHeuristic {
+    static let aspectRange: ClosedRange<Double> = 1.95...2.4
+
+    static func isLikely(pixelWidth: Int, pixelHeight: Int) -> Bool {
+        let long = max(pixelWidth, pixelHeight)
+        let short = min(pixelWidth, pixelHeight)
+        guard short > 0 else { return false }
+        return aspectRange.contains(Double(long) / Double(short))
+    }
+}

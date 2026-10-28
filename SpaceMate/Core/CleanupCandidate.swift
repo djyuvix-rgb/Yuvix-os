@@ -14,7 +14,7 @@ enum CandidateKind: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .screenRecordings: return "Long screen recordings"
+        case .screenRecordings: return "Long screen recordings (likely)"
         case .duplicateFiles: return "Identical duplicate files"
         case .largeDownloads: return "Large downloaded files"
         case .screenshots: return "Screenshots"
@@ -72,7 +72,7 @@ enum CandidateKind: String, Codable, CaseIterable, Identifiable {
 
     var why: String {
         switch self {
-        case .screenRecordings: return "Screen recordings are often captured for a moment and forgotten, yet they're stored at full screen resolution."
+        case .screenRecordings: return "Screen recordings are often captured for a moment and forgotten, yet they're stored at full screen resolution. Photos doesn't label screen recordings for apps, so SpaceMate spots them by their screen-shaped dimensions. Check each one before deleting."
         case .duplicateFiles: return "These files have byte-for-byte identical contents (matching SHA-256 hashes). Keeping one copy loses nothing."
         case .largeDownloads: return "Large files in a Downloads folder are often installers, archives or one-off downloads you no longer need."
         case .screenshots: return "Screenshots pile up quickly and are rarely needed long-term."

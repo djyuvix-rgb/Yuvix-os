@@ -1,5 +1,6 @@
 import AVFoundation
 import Photos
+import PhotosUI
 import UIKit
 
 /// A photo-library item as SpaceMate sees it. Built from public `PHAsset` properties.
@@ -123,7 +124,8 @@ final class PhotoLibraryService {
     static func item(from asset: PHAsset) -> MediaItem {
         let kind: MediaItem.Kind
         if asset.mediaType == .video {
-            kind = asset.mediaSubtypes.contains(.videoScreenRecording) ? .screenRecording : .video
+            let looksLikeScreen = ScreenRecordingHeuristic.isLikely(pixelWidth: asset.pixelWidth, pixelHeight: asset.pixelHeight)
+            kind = looksLikeScreen ? .screenRecording : .video
         } else {
             kind = asset.mediaSubtypes.contains(.photoScreenshot) ? .screenshot : .photo
         }

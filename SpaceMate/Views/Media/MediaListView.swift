@@ -27,7 +27,7 @@ struct MediaListView: View {
                 }
                 .pickerStyle(.segmented)
                 if kind == .screenRecordings {
-                    Text("Recordings of \(Int(app.settings.longScreenRecordingSeconds)) seconds or longer count as cleanup candidates.")
+                    Text("Videos with your screen's shape are listed here. Photos doesn't tell apps which videos are screen recordings, so check each one. Those of \(Int(app.settings.longScreenRecordingSeconds)) seconds or longer count as cleanup candidates.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if kind == .largeVideos {
                     Text("Videos over \(ByteFormat.string(app.settings.largeVideoThreshold)) count as cleanup candidates.")

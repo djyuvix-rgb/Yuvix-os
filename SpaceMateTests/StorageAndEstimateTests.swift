@@ -94,3 +94,18 @@ final class MediaSizeEstimatorTests: XCTestCase {
         XCTAssertEqual(Double(still), 2_440_000, accuracy: 100_000)
     }
 }
+
+final class ScreenRecordingHeuristicTests: XCTestCase {
+    func testScreenShapedVideosMatchInEitherOrientation() {
+        XCTAssertTrue(ScreenRecordingHeuristic.isLikely(pixelWidth: 1170, pixelHeight: 2532)) // iPhone 13
+        XCTAssertTrue(ScreenRecordingHeuristic.isLikely(pixelWidth: 2532, pixelHeight: 1170))
+        XCTAssertTrue(ScreenRecordingHeuristic.isLikely(pixelWidth: 886, pixelHeight: 1920))  // scaled recording
+    }
+
+    func testCameraVideoDoesNotMatch() {
+        XCTAssertFalse(ScreenRecordingHeuristic.isLikely(pixelWidth: 1920, pixelHeight: 1080))
+        XCTAssertFalse(ScreenRecordingHeuristic.isLikely(pixelWidth: 2160, pixelHeight: 3840))
+        XCTAssertFalse(ScreenRecordingHeuristic.isLikely(pixelWidth: 1440, pixelHeight: 1080))
+        XCTAssertFalse(ScreenRecordingHeuristic.isLikely(pixelWidth: 0, pixelHeight: 0))
+    }
+}
