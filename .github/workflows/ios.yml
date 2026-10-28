@@ -1,0 +1,64 @@
+name: iOS build & tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          runtimes = sorted((k for k in devices if '.iOS-' in k), reverse=True)
+          print(next(d['udid'] for k in runtimes for d in devices[k] if d['name'].startswith('iPhone')))
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$UDID"
+
+      - name: Build for iPhone (device, unsigned)
+        run: |
+          set +e
+          xcodebuild build \
+            -project SpaceMate.xcodeproj -scheme SpaceMate -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO > build.log 2>&1
+          STATUS=$?
+          grep -E "error:|warning:.*\.swift|\*\* BUILD" build.log | sort -u | head -n 200
+          exit $STATUS
+
+      - name: Run unit tests (simulator)
+        run: |
+          set +e
+          xcodebuild test \
+            -project SpaceMate.xcodeproj -scheme SpaceMate \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult > test.log 2>&1
+          STATUS=$?
+          grep -E "error:|Test Case .*(passed|failed)|Executed [0-9]+ test|\*\* TEST" test.log | head -n 400
+          exit $STATUS
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore
