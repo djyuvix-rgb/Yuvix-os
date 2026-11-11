@@ -1,0 +1,14 @@
+{
+  "name": "yuvizbot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Yuvizbot — a personal finance assistant for Telegram, running free on Cloudflare Workers",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.20.0"
+  }
+}

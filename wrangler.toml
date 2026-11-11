@@ -1,0 +1,8 @@
+name = "yuvizbot"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# The KV namespace id is filled in automatically by the deploy workflow.
+[[kv_namespaces]]
+binding = "DATA"
+id = "KV_NAMESPACE_ID"
